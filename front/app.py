@@ -5,6 +5,12 @@ import streamlit as st
 
 API_URL = os.getenv("API_URL", "http://api:8000")
 
+API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN")
+
+headers = {
+    "Authorization": f"Bearer {API_AUTH_TOKEN}"
+}
+
 st.set_page_config(
     page_title="Water Lab",
     page_icon="💧",
@@ -27,6 +33,12 @@ with st.form("prediction_form"):
     submitted = st.form_submit_button("Analyser")
 
 if submitted:
+    if not API_AUTH_TOKEN:
+        st.error(
+            "Le jeton d'authentification de l'API n'est pas configuré."
+        )
+        st.stop()
+
     payload = {
         "ph": ph,
         "Hardness": hardness,
@@ -43,10 +55,17 @@ if submitted:
         response = requests.post(
             f"{API_URL}/predict",
             json=payload,
+            headers=headers,
             timeout=10,
         )
         response.raise_for_status()
         result = response.json()
+
+        if not API_AUTH_TOKEN:
+            st.error(
+                "Le jeton d'authentification de l'API n'est pas configuré."
+            )
+            st.stop()
 
         st.success(f"Résultat : {result['label']}")
         st.metric(

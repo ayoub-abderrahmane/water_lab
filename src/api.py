@@ -2,8 +2,12 @@ import logging
 import time
 
 from fastapi import FastAPI, HTTPException, Request
-from prometheus_client import make_asgi_app
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, ConfigDict, Field
+
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+
+from src.auth import require_authentication
 
 from src.logging_config import configure_logging
 from src.metrics import (
@@ -95,16 +99,17 @@ async def monitor_requests(
 
         endpoint = request.url.path
 
-        API_REQUESTS_TOTAL.labels(
-            method=request.method,
-            endpoint=endpoint,
-            status_code=str(status_code),
-        ).inc()
+        if endpoint != "/metrics":
+            API_REQUESTS_TOTAL.labels(
+                method=request.method,
+                endpoint=endpoint,
+                status_code=str(status_code),
+            ).inc()
 
-        API_REQUEST_DURATION_SECONDS.labels(
-            method=request.method,
-            endpoint=endpoint,
-        ).observe(duration)
+            API_REQUEST_DURATION_SECONDS.labels(
+                method=request.method,
+                endpoint=endpoint,
+            ).observe(duration)
 
         logger.info(
             "Requête terminée | méthode=%s | endpoint=%s | "
@@ -156,7 +161,10 @@ def health() -> dict[str, str]:
     }
 
 
-@app.get("/model/info")
+@app.get(
+    "/model/info",
+    dependencies=[Depends(require_authentication)],
+)
 def model_info() -> dict[str, str]:
     return {
         "name": "XGBoost Water Potability",
@@ -168,6 +176,7 @@ def model_info() -> dict[str, str]:
 @app.post(
     "/predict",
     response_model=PredictionResponse,
+    dependencies=[Depends(require_authentication)],
 )
 def predict(sample: WaterSample) -> PredictionResponse:
     input_data = sample.model_dump()
@@ -231,5 +240,16 @@ def predict(sample: WaterSample) -> PredictionResponse:
     )
 
 
-metrics_app = make_asgi_app()
-app.mount("/metrics", metrics_app)
+@app.get(
+    "/metrics",
+    include_in_schema=False,
+    dependencies=[Depends(require_authentication)],
+)
+def metrics() -> Response:
+    """
+    Expose les métriques Prometheus.
+    """
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )

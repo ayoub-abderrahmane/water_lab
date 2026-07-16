@@ -57,6 +57,7 @@ services:
         "8000"
       ]
     environment:
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     ports:
@@ -86,22 +87,20 @@ services:
       ]
     environment:
       API_URL: http://api:8000
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN}
     ports:
       - "8501:8501"
     depends_on:
       - api
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus
     container_name: water_lab_prometheus
-    restart: unless-stopped
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
     ports:
       - "9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus_token.txt:/etc/prometheus/api_token:ro
       - prometheus_data:/prometheus
     depends_on:
       - api
