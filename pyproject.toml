@@ -1,0 +1,27 @@
+[project]
+name = "water-lab"
+version = "0.1.0"
+description = "Application de prédiction de la potabilité de l'eau"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "fastapi>=0.116.0",
+    "uvicorn[standard]>=0.35.0",
+    "pandas>=2.3.0",
+    "scikit-learn>=1.7.0",
+    "xgboost>=3.0.0",
+    "joblib>=1.5.0",
+    "mlflow>=3.0.0",
+    "pytest>=8.4.0",
+    "httpx>=0.28.0",
+    "ruff>=0.12.0",
+    "prometheus-client>=0.25.0",
+    "streamlit>=1.59.2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"

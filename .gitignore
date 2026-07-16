@@ -6,6 +6,19 @@ __pycache__/
 # C extensions
 *.so
 
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+.env
+mlflow.db
+mlruns/
+
+models/*.joblib
+data/processed/*.csv
+
 # Distribution / packaging
 .Python
 build/
