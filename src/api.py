@@ -5,9 +5,17 @@ from fastapi import FastAPI, HTTPException, Request
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, ConfigDict, Field
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, File, UploadFile
 
 from src.auth import require_authentication
+
+from src.metrics import (
+    OCR_FILES_TOTAL,
+    OCR_PROCESSING_DURATION_SECONDS,
+    OCR_REQUESTS_TOTAL,
+)
+from src.ocr_service import OCRError, extract_text_from_file
+from src.ocr_parser import parse_water_report
 
 from src.logging_config import configure_logging
 from src.metrics import (
@@ -23,6 +31,14 @@ from src.model import load_model, predict_water_quality
 
 configure_logging()
 logger = logging.getLogger(__name__)
+
+ALLOWED_OCR_CONTENT_TYPES = {
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+}
+
+MAX_OCR_FILE_SIZE = 5 * 1024 * 1024
 
 app = FastAPI(
     title="Water Lab API",
@@ -63,6 +79,14 @@ class PredictionResponse(BaseModel):
     predicted_class: int
     label: str
     potable_probability: float
+
+class OCRResponse(BaseModel):
+    filename: str
+    content_type: str
+    page_count: int
+    processing_time_ms: int | None
+    extracted_text: str
+    extracted_values: dict[str, float | None]
 
 
 @app.middleware("http")
@@ -239,7 +263,111 @@ def predict(sample: WaterSample) -> PredictionResponse:
         potable_probability=round(probability, 4),
     )
 
+@app.post(
+    "/ocr",
+    response_model=OCRResponse,
+    dependencies=[Depends(require_authentication)],
+)
+async def extract_document_text(
+    file: UploadFile = File(...),
+) -> OCRResponse:
+    """
+    Extrait le texte d'un fichier PDF, PNG ou JPEG avec OCR.space.
+    """
+    filename = file.filename or "document"
 
+    content_type = (
+        file.content_type
+        or "application/octet-stream"
+    )
+
+    if content_type not in ALLOWED_OCR_CONTENT_TYPES:
+        OCR_REQUESTS_TOTAL.labels(
+            status="invalid_format",
+        ).inc()
+
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                "Format non pris en charge. "
+                "Formats autorisés : PDF, PNG et JPEG."
+            ),
+        )
+
+    file_content = await file.read()
+
+    if not file_content:
+        OCR_REQUESTS_TOTAL.labels(
+            status="empty_file",
+        ).inc()
+
+        raise HTTPException(
+            status_code=400,
+            detail="Le fichier transmis est vide.",
+        )
+
+    if len(file_content) > MAX_OCR_FILE_SIZE:
+        OCR_REQUESTS_TOTAL.labels(
+            status="file_too_large",
+        ).inc()
+
+        raise HTTPException(
+            status_code=413,
+            detail="Le fichier dépasse la limite de 5 Mo.",
+        )
+
+    OCR_FILES_TOTAL.labels(
+        content_type=content_type,
+    ).inc()
+
+    start_time = time.perf_counter()
+
+    try:
+        result = extract_text_from_file(
+            file_content=file_content,
+            filename=filename,
+            content_type=content_type,
+        )
+
+    except OCRError as error:
+        OCR_REQUESTS_TOTAL.labels(
+            status="error",
+        ).inc()
+
+        logger.warning(
+            "Échec du traitement OCR | fichier=%s | erreur=%s",
+            filename,
+            error,
+        )
+
+        raise HTTPException(
+            status_code=502,
+            detail=str(error),
+        ) from error
+
+    finally:
+        duration = time.perf_counter() - start_time
+
+        OCR_PROCESSING_DURATION_SECONDS.observe(
+            duration
+        )
+
+    OCR_REQUESTS_TOTAL.labels(
+        status="success",
+    ).inc()
+
+    extracted_values = parse_water_report(
+        result.text
+    )
+
+    return OCRResponse(
+        filename=filename,
+        content_type=content_type,
+        page_count=result.page_count,
+        processing_time_ms=result.processing_time_ms,
+        extracted_text=result.text,
+        extracted_values=extracted_values,
+    )
 @app.get(
     "/metrics",
     include_in_schema=False,

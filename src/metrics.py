@@ -39,3 +39,20 @@ TRAINING_RUNS_TOTAL = Counter(
     "Nombre total d'entraînements exécutés",
     ["status"],
 )
+
+OCR_REQUESTS_TOTAL = Counter(
+    "water_lab_ocr_requests_total",
+    "Nombre total de traitements OCR",
+    ["status"],
+)
+
+OCR_PROCESSING_DURATION_SECONDS = Histogram(
+    "water_lab_ocr_processing_duration_seconds",
+    "Durée des traitements OCR",
+)
+
+OCR_FILES_TOTAL = Counter(
+    "water_lab_ocr_files_total",
+    "Nombre de fichiers envoyés au service OCR",
+    ["content_type"],
+)
