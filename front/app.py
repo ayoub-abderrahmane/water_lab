@@ -30,10 +30,6 @@ DISPLAY_LABELS = {
     "Turbidity": "Turbidité",
 }
 
-HEADERS = {
-    "Authorization": f"Bearer {API_AUTH_TOKEN}"
-}
-
 SLIDER_CONFIG = {
     "ph": {
         "label": "pH",
@@ -91,6 +87,31 @@ SLIDER_CONFIG = {
     },
 }
 
+if "user_session_token" not in st.session_state:
+    st.session_state["user_session_token"] = None
+
+if "connected_username" not in st.session_state:
+    st.session_state["connected_username"] = None
+
+def get_api_headers() -> dict[str, str]:
+    """
+    Construit les en-têtes utilisés pour appeler l'API.
+    """
+    headers = {
+        "Authorization": f"Bearer {API_AUTH_TOKEN}",
+    }
+
+    user_token = st.session_state.get(
+        "user_session_token"
+    )
+
+    if user_token:
+        headers["X-User-Session"] = user_token
+
+    return headers
+
+HEADERS = get_api_headers()
+
 def display_water_warnings(values: dict[str, float]) -> None:
     warnings = []
 
@@ -135,53 +156,103 @@ st.set_page_config(
 st.title("Water Lab")
 st.write("Prédiction de la potabilité d'un échantillon d'eau")
 
-prediction_tab, ocr_tab = st.tabs(
+prediction_tab, ocr_tab, history_tab = st.tabs(
     [
-        "Prédiction manuelle",
-        "Analyse OCR",
+        "Prédiction",
+        "Extraction OCR",
+        "Historique",
     ]
 )
 
-def get_water_warnings(values: dict[str, float]) -> list[str]:
-    warnings = []
+with history_tab:
+    st.subheader("Historique des prédictions")
 
-    ph = values["ph"]
-    turbidity = values["Turbidity"]
-    sulfate = values["Sulfate"]
-    solids = values["Solids"]
-    chloramines = values["Chloramines"]
-
-    if ph < 6.5 or ph > 8.5:
-        warnings.append(
-            "Le pH est en dehors de la plage opérationnelle "
-            "couramment utilisée de 6,5 à 8,5."
+    if not st.session_state["user_session_token"]:
+        st.info(
+            "Connectez-vous au compte inovie_lab pour "
+            "consulter l'historique."
         )
 
-    if turbidity > 1:
-        warnings.append(
-            "La turbidité dépasse 1 NTU. Une turbidité faible "
-            "est recommandée pour garantir une désinfection efficace."
-        )
+    else:
+        try:
+            response = requests.get(
+                f"{API_URL}/predictions/history",
+                headers=get_api_headers(),
+                timeout=10,
+            )
 
-    if sulfate > 500:
-        warnings.append(
-            "La concentration en sulfates dépasse 500 mg/L. "
-            "Une vérification complémentaire est recommandée."
-        )
+            if response.status_code == 401:
+                st.session_state[
+                    "user_session_token"
+                ] = None
 
-    if solids > 1000:
-        warnings.append(
-            "Les solides dissous dépassent 1 000 mg/L. "
-            "L'eau peut devenir peu acceptable au goût."
-        )
+                st.session_state[
+                    "connected_username"
+                ] = None
 
-    if chloramines > 3:
-        warnings.append(
-            "La concentration en chloramines dépasse "
-            "la valeur guide de 3 mg/L."
-        )
+                st.warning(
+                    "La session a expiré. "
+                    "Reconnectez-vous."
+                )
 
-    return warnings
+            else:
+                response.raise_for_status()
+                history = response.json()
+
+        except requests.RequestException as error:
+            st.error(
+                "Impossible de charger l'historique : "
+                f"{error}"
+            )
+
+        else:
+            if not history:
+                st.info(
+                    "Aucune prédiction enregistrée."
+                )
+            else:
+                rows = []
+
+                for item in history:
+                    rows.append(
+                        {
+                            "Date": item["created_at"],
+                            "Source": item["source"],
+                            "Résultat": item["label"],
+                            "Probabilité potable": (
+                                item[
+                                    "potable_probability"
+                                ]
+                            ),
+                            "pH": item["ph"],
+                            "Dureté": item["Hardness"],
+                            "Solides dissous": (
+                                item["Solids"]
+                            ),
+                            "Chloramines": (
+                                item["Chloramines"]
+                            ),
+                            "Sulfates": item["Sulfate"],
+                            "Conductivité": (
+                                item["Conductivity"]
+                            ),
+                            "Carbone organique": (
+                                item["Organic_carbon"]
+                            ),
+                            "Trihalométhanes": (
+                                item["Trihalomethanes"]
+                            ),
+                            "Turbidité": (
+                                item["Turbidity"]
+                            ),
+                        }
+                    )
+
+                st.dataframe(
+                    rows,
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
 # ------------------------------------------------------------------
 # Prédiction manuelle
@@ -265,7 +336,7 @@ with prediction_tab:
     submitted = st.button(
         "Analyser",
         type="primary",
-        key="manual_prediction",
+        key="manuel_prediction",
     )
 
     if submitted:
@@ -293,11 +364,12 @@ with prediction_tab:
 
         try:
             response = requests.post(
-                f"{API_URL}/predict",
-                json=payload,
-                headers=HEADERS,
-                timeout=10,
-            )
+            f"{API_URL}/predict",
+            params={"source": "manuel"},
+            json=payload,
+            headers=get_api_headers(),
+            timeout=10,
+        )
 
             if response.status_code == 401:
                 st.error("Le jeton d'authentification est invalide.")
@@ -331,7 +403,7 @@ with ocr_tab:
 
     st.write(
         "Formats acceptés : PDF, PNG et JPEG. "
-        "Taille maximale : 5 Mo."
+        "Taille maximale : 1 Mo."
     )
 
     uploaded_file = st.file_uploader(
@@ -363,7 +435,7 @@ with ocr_tab:
                 ):
                     response = requests.post(
                         f"{API_URL}/ocr",
-                        headers=HEADERS,
+                        headers=get_api_headers(),
                         files={
                             "file": (
                                 uploaded_file.name,
@@ -372,7 +444,7 @@ with ocr_tab:
                             )
                         },
                         timeout=45,
-                    )
+                    )   
 
                 if response.status_code == 401:
                     st.error(
@@ -531,11 +603,12 @@ with ocr_tab:
                     "Calcul de la prédiction..."
                 ):
                     response = requests.post(
-                        f"{API_URL}/predict",
-                        json=slider_values,
-                        headers=HEADERS,
-                        timeout=10,
-                    )
+                    f"{API_URL}/predict",
+                    params={"source": "ocr"},
+                    json=slider_values,
+                    headers=get_api_headers(),
+                    timeout=10,
+                )
 
                 if response.status_code == 401:
                     st.error(
@@ -586,3 +659,87 @@ with ocr_tab:
                 file_name="texte_ocr.txt",
                 mime="text/plain",
             )
+
+with st.sidebar:
+    st.header("Session")
+
+    if not st.session_state["user_session_token"]:
+        st.info(
+            "Mode invité : les prédictions ne sont "
+            "pas enregistrées."
+        )
+
+        with st.form("login_form"):
+            username = st.text_input(
+                "Nom du compte",
+                value="inovie_lab",
+            )
+
+            password = st.text_input(
+                "Mot de passe",
+                type="password",
+            )
+
+            login_submitted = st.form_submit_button(
+                "Se connecter"
+            )
+
+        if login_submitted:
+            try:
+                response = requests.post(
+                    f"{API_URL}/auth/login",
+                    headers={
+                        "Authorization": (
+                            f"Bearer {API_AUTH_TOKEN}"
+                        )
+                    },
+                    json={
+                        "username": username,
+                        "password": password,
+                    },
+                    timeout=10,
+                )
+
+                response.raise_for_status()
+                login_result = response.json()
+
+            except requests.RequestException:
+                st.error(
+                    "Identifiants incorrects ou API "
+                    "indisponible."
+                )
+
+            else:
+                st.session_state[
+                    "user_session_token"
+                ] = login_result["session_token"]
+
+                st.session_state[
+                    "connected_username"
+                ] = login_result["username"]
+
+                st.rerun()
+
+    else:
+        st.success(
+            "Connecté : "
+            + st.session_state["connected_username"]
+        )
+
+        if st.button("Se déconnecter"):
+            try:
+                requests.post(
+                    f"{API_URL}/auth/logout",
+                    headers=get_api_headers(),
+                    timeout=10,
+                )
+            finally:
+                st.session_state[
+                    "user_session_token"
+                ] = None
+
+                st.session_state[
+                    "connected_username"
+                ] = None
+
+                st.rerun()

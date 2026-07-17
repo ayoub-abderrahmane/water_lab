@@ -7,6 +7,22 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, File, UploadFile
 
+from datetime import datetime
+
+from fastapi import Header
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from src.database import get_database
+from src.database_models import Prediction, User
+from src.init_database import initialize_database
+from src.user_auth import (
+    create_user_session,
+    delete_session,
+    get_optional_connected_user,
+    verify_password,
+)
+
 from src.auth import require_authentication
 
 from src.metrics import (
@@ -88,6 +104,42 @@ class OCRResponse(BaseModel):
     extracted_text: str
     extracted_values: dict[str, float | None]
 
+class LoginRequest(BaseModel):
+    username: str = Field(
+        min_length=3,
+        max_length=100,
+    )
+    password: str = Field(
+        min_length=12,
+        max_length=200,
+    )
+
+
+class LoginResponse(BaseModel):
+    username: str
+    session_token: str
+    expires_at: datetime
+
+
+class PredictionHistoryItem(BaseModel):
+    id: int
+    source: str
+    created_at: datetime
+
+    ph: float | None
+    Hardness: float | None
+    Solids: float | None
+    Chloramines: float | None
+    Sulfate: float | None
+    Conductivity: float | None
+    Organic_carbon: float | None
+    Trihalomethanes: float | None
+    Turbidity: float | None
+
+    predicted_class: int
+    label: str
+    potable_probability: float
+
 
 @app.middleware("http")
 async def monitor_requests(
@@ -148,12 +200,16 @@ async def monitor_requests(
 @app.on_event("startup")
 def startup_event() -> None:
     """
-    Vérifie que le modèle est disponible au démarrage.
+    Vérifie que le modèle et la db sont disponible au démarrage.
     """
+    initialize_database()
+    logger.info("Base de données initialisée")
+
     try:
         load_model()
         MODEL_LOADED.set(1)
         logger.info("Modèle chargé avec succès au démarrage")
+
 
     except FileNotFoundError:
         MODEL_LOADED.set(0)
@@ -202,7 +258,14 @@ def model_info() -> dict[str, str]:
     response_model=PredictionResponse,
     dependencies=[Depends(require_authentication)],
 )
-def predict(sample: WaterSample) -> PredictionResponse:
+def predict(
+    sample: WaterSample,
+    source: str = "manuel",
+    connected_user: User | None = Depends(
+        get_optional_connected_user
+    ),
+    database: Session = Depends(get_database),
+) -> PredictionResponse:
     input_data = sample.model_dump()
 
     for feature_name, value in input_data.items():
@@ -257,11 +320,170 @@ def predict(sample: WaterSample) -> PredictionResponse:
         probability,
     )
 
+    if connected_user is not None:
+        if source not in {"manuel", "ocr"}:
+            source = "manuel"
+
+        database.add(
+            Prediction(
+                user_id=connected_user.id,
+                source=source,
+                ph=input_data["ph"],
+                hardness=input_data["Hardness"],
+                solids=input_data["Solids"],
+                chloramines=input_data["Chloramines"],
+                sulfate=input_data["Sulfate"],
+                conductivity=input_data["Conductivity"],
+                organic_carbon=input_data[
+                    "Organic_carbon"
+                ],
+                trihalomethanes=input_data[
+                    "Trihalomethanes"
+                ],
+                turbidity=input_data["Turbidity"],
+                predicted_class=predicted_class,
+                label=label,
+                potable_probability=round(
+                    probability,
+                    4,
+                ),
+            )
+        )
+
+        database.commit()
+
+        logger.info(
+            "Prédiction enregistrée | utilisateur=%s",
+            connected_user.username,
+        )
+
     return PredictionResponse(
         predicted_class=predicted_class,
         label=label,
         potable_probability=round(probability, 4),
     )
+
+@app.post(
+    "/auth/login",
+    response_model=LoginResponse,
+    dependencies=[Depends(require_authentication)],
+)
+def login(
+    credentials: LoginRequest,
+    database: Session = Depends(get_database),
+) -> LoginResponse:
+    """
+    Connecte le compte laboratoire.
+
+    La route retourne un jeton de session temporaire.
+    """
+    user = database.scalar(
+        select(User).where(
+            User.username == credentials.username
+        )
+    )
+
+    invalid_credentials = (
+        user is None
+        or not user.is_active
+        or not verify_password(
+            credentials.password,
+            user.password_hash,
+        )
+    )
+
+    if invalid_credentials:
+        raise HTTPException(
+            status_code=401,
+            detail="Identifiants incorrects.",
+        )
+
+    token, expires_at = create_user_session(
+        database,
+        user,
+    )
+
+    return LoginResponse(
+        username=user.username,
+        session_token=token,
+        expires_at=expires_at,
+    )
+
+
+@app.post(
+    "/auth/logout",
+    dependencies=[Depends(require_authentication)],
+)
+def logout(
+    x_user_session: str = Header(
+        alias="X-User-Session",
+    ),
+    database: Session = Depends(get_database),
+) -> dict[str, str]:
+    """Supprime la session utilisateur."""
+    delete_session(
+        database,
+        x_user_session,
+    )
+
+    return {
+        "message": "Déconnexion effectuée.",
+    }
+
+@app.get(
+    "/predictions/history",
+    response_model=list[PredictionHistoryItem],
+    dependencies=[Depends(require_authentication)],
+)
+def prediction_history(
+    connected_user: User | None = Depends(
+        get_optional_connected_user
+    ),
+    database: Session = Depends(get_database),
+) -> list[PredictionHistoryItem]:
+    """
+    Retourne l'historique du compte connecté.
+    """
+    if connected_user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Connexion utilisateur requise.",
+        )
+
+    predictions = database.scalars(
+        select(Prediction)
+        .where(
+            Prediction.user_id == connected_user.id
+        )
+        .order_by(
+            Prediction.created_at.desc()
+        )
+        .limit(100)
+    ).all()
+
+    return [
+        PredictionHistoryItem(
+            id=item.id,
+            source=item.source,
+            created_at=item.created_at,
+            ph=item.ph,
+            Hardness=item.hardness,
+            Solids=item.solids,
+            Chloramines=item.chloramines,
+            Sulfate=item.sulfate,
+            Conductivity=item.conductivity,
+            Organic_carbon=item.organic_carbon,
+            Trihalomethanes=item.trihalomethanes,
+            Turbidity=item.turbidity,
+            predicted_class=item.predicted_class,
+            label=item.label,
+            potable_probability=(
+                item.potable_probability
+            ),
+        )
+        for item in predictions
+    ]
+
 
 @app.post(
     "/ocr",
