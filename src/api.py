@@ -38,7 +38,7 @@ ALLOWED_OCR_CONTENT_TYPES = {
     "image/jpeg",
 }
 
-MAX_OCR_FILE_SIZE = 5 * 1024 * 1024
+MAX_OCR_FILE_SIZE = 1 * 1024 * 1024
 
 app = FastAPI(
     title="Water Lab API",
@@ -313,7 +313,7 @@ async def extract_document_text(
 
         raise HTTPException(
             status_code=413,
-            detail="Le fichier dépasse la limite de 5 Mo.",
+            detail="Le fichier dépasse la limite de 1 Mo.",
         )
 
     OCR_FILES_TOTAL.labels(
