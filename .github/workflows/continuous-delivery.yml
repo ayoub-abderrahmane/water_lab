@@ -1,0 +1,118 @@
+name: Livraison continue du modèle
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+
+  pull_request:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+jobs:
+  validate-and-test:
+    name: Valider les données et tester le modèle
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+
+      - name: Installer uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Installer Python
+        run: uv python install 3.12
+
+      - name: Installer les dépendances
+        run: uv sync --locked --dev
+
+      - name: Valider les données et le cycle du modèle
+        run: |
+          uv run pytest tests/test_cycle_model.py \
+            -v \
+            --cov=src.preprocessing \
+            --cov=src.pipeline \
+            --cov-report=term-missing \
+            --cov-report=html
+
+      - name: Publier le rapport de couverture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapport-couverture
+          path: htmlcov/
+          if-no-files-found: ignore
+
+  train-and-validate:
+    name: Entraîner et valider le modèle
+    runs-on: ubuntu-latest
+    needs: validate-and-test
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+
+      - name: Installer uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Installer Python
+        run: uv python install 3.12
+
+      - name: Installer les dépendances
+        run: uv sync --locked
+
+      - name: Entraîner le modèle
+        run: uv run python -m src.train
+
+      - name: Vérifier la création du modèle
+        run: |
+          test -f models/water_xgboost_pipeline.joblib
+
+      - name: Publier le modèle entraîné
+        uses: actions/upload-artifact@v4
+        with:
+          name: modele-water-lab
+          path: models/water_xgboost_pipeline.joblib
+          if-no-files-found: error
+
+  package:
+    name: Construire l'image Docker
+    runs-on: ubuntu-latest
+    needs: train-and-validate
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+
+      - name: Construire l'image Docker
+        run: |
+          docker build \
+            -t water-lab-api:${{ github.sha }} \
+            .
+
+      - name: Tester la création de l'image
+        run: docker image inspect water-lab-api:${{ github.sha }}
+
+  deploy:
+    name: Préparer le déploiement
+    runs-on: ubuntu-latest
+    needs: package
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    environment:
+      name: production
+
+    steps:
+      - name: Confirmer la préparation au déploiement
+        run: |
+          echo "Les tests, l'entraînement, la validation et le packaging sont terminés."
+          echo "L'image est prête à être déployée."
