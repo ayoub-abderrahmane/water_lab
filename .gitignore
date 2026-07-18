@@ -18,7 +18,6 @@ __pycache__/
 mlflow.db
 mlruns/
 
-models/*.joblib
 data/processed/*.csv
 
 # Distribution / packaging
