@@ -32,12 +32,16 @@ jobs:
       - name: Installer les dépendances
         run: uv sync --locked --dev
 
-      - name: Valider les données et le cycle du modèle
+      - name: Tester le modèle et l'application
+        env:
+          API_AUTH_TOKEN: test-token
+          DATABASE_URL: sqlite+pysqlite:///./test_water_lab.db
         run: |
-          uv run pytest tests/test_cycle_model.py \
+          uv run pytest \
+            tests/test_cycle_model.py \
+            tests/test_api.py \
             -v \
-            --cov=src.preprocessing \
-            --cov=src.pipeline \
+            --cov=src \
             --cov-report=term-missing \
             --cov-report=html
 

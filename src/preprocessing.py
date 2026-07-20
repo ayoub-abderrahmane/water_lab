@@ -165,6 +165,8 @@ def main() -> None:
             dataframe,
             CLEAN_DATA_PATH,
         )
+        print(dataframe.columns.tolist())
+        print(dataframe.shape)
     except Exception:
         logger.exception("Échec du preprocessing")
         raise

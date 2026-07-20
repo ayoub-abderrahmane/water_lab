@@ -1,8 +1,28 @@
 import os
 from types import SimpleNamespace
 
+os.environ.setdefault(
+    "DATABASE_URL",
+    "sqlite+pysqlite:///:memory:",
+)
+
+TEST_TOKEN = os.getenv(
+    "API_AUTH_TOKEN",
+    "test-token",
+)
+
+os.environ.setdefault(
+    "API_AUTH_TOKEN",
+    TEST_TOKEN,
+)
+
 import pytest
 from fastapi.testclient import TestClient
+
+from datetime import datetime, timedelta, timezone
+
+from src.database import get_database
+from src.user_auth import get_optional_connected_user
 
 TEST_TOKEN = os.getenv("API_AUTH_TOKEN", "test-token")
 os.environ.setdefault("API_AUTH_TOKEN", TEST_TOKEN)
@@ -29,6 +49,55 @@ VALID_PAYLOAD = {
     "Turbidity": 4.0,
 }
 
+class FakeScalarResult:
+    """Résultat simulé de SQLAlchemy pour database.scalars()."""
+
+    def __init__(self, items: list) -> None:
+        self.items = items
+
+    def all(self) -> list:
+        return self.items
+
+
+class FakeDatabase:
+    """
+    Session SQLAlchemy simulée.
+
+    Elle permet de tester l'API sans écrire dans PostgreSQL.
+    """
+
+    def __init__(
+        self,
+        scalar_result=None,
+        scalars_result: list | None = None,
+    ) -> None:
+        self.scalar_result = scalar_result
+        self.scalars_result = scalars_result or []
+        self.added_objects = []
+        self.commit_called = False
+
+    def scalar(self, statement):
+        return self.scalar_result
+
+    def scalars(self, statement) -> FakeScalarResult:
+        return FakeScalarResult(self.scalars_result)
+
+    def add(self, instance) -> None:
+        self.added_objects.append(instance)
+
+    def commit(self) -> None:
+        self.commit_called = True
+
+
+@pytest.fixture(autouse=True)
+def reset_dependency_overrides():
+    """
+    Supprime les dépendances simulées après chaque test.
+
+    Cela évite qu'un test influence les suivants.
+    """
+    yield
+    app.dependency_overrides.clear()
 
 def test_predict_without_token_is_rejected() -> None:
     response = client.post("/predict", json=VALID_PAYLOAD)
@@ -250,3 +319,409 @@ def test_unknown_route_returns_404() -> None:
     )
 
     assert response.status_code == 404
+
+def test_health_returns_model_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "src.api.load_model",
+        lambda: object(),
+    )
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "healthy",
+        "model": "loaded",
+    }
+
+
+def test_health_returns_503_when_model_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_file_not_found():
+        raise FileNotFoundError(
+            "Modèle introuvable."
+        )
+
+    monkeypatch.setattr(
+        "src.api.load_model",
+        raise_file_not_found,
+    )
+
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    assert "Modèle introuvable" in response.json()["detail"]
+
+def test_login_without_api_token_is_rejected() -> None:
+    response = client.post(
+        "/auth/login",
+        json={
+            "username": "inovie_lab",
+            "password": "mot-de-passe-test",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_login_with_invalid_credentials_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_user = SimpleNamespace(
+        id=1,
+        username="inovie_lab",
+        password_hash="hash-test",
+        is_active=True,
+    )
+
+    fake_database = FakeDatabase(
+        scalar_result=fake_user,
+    )
+
+    def override_database():
+        yield fake_database
+
+    app.dependency_overrides[
+        get_database
+    ] = override_database
+
+    monkeypatch.setattr(
+        "src.api.verify_password",
+        lambda password, password_hash: False,
+    )
+
+    response = client.post(
+        "/auth/login",
+        headers=AUTH_HEADERS,
+        json={
+            "username": "inovie_lab",
+            "password": "mauvais-mot-de-passe",
+        },
+    )
+
+    assert response.status_code == 401
+    assert (
+        response.json()["detail"]
+        == "Identifiants incorrects."
+    )
+
+
+def test_login_with_valid_credentials_returns_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_user = SimpleNamespace(
+        id=1,
+        username="inovie_lab",
+        password_hash="hash-test",
+        is_active=True,
+    )
+
+    fake_database = FakeDatabase(
+        scalar_result=fake_user,
+    )
+
+    def override_database():
+        yield fake_database
+
+    app.dependency_overrides[
+        get_database
+    ] = override_database
+
+    monkeypatch.setattr(
+        "src.api.verify_password",
+        lambda password, password_hash: True,
+    )
+
+    expires_at = (
+        datetime.now(timezone.utc)
+        + timedelta(hours=8)
+    )
+
+    monkeypatch.setattr(
+        "src.api.create_user_session",
+        lambda database, user: (
+            "session-token-test",
+            expires_at,
+        ),
+    )
+
+    response = client.post(
+        "/auth/login",
+        headers=AUTH_HEADERS,
+        json={
+            "username": "inovie_lab",
+            "password": "mot-de-passe-test",
+        },
+    )
+
+    assert response.status_code == 200
+
+    result = response.json()
+
+    assert result["username"] == "inovie_lab"
+    assert (
+        result["session_token"]
+        == "session-token-test"
+    )
+    assert "expires_at" in result
+
+def test_logout_without_user_session_is_rejected() -> None:
+    response = client.post(
+        "/auth/logout",
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 422
+
+
+def test_logout_deletes_user_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_database = FakeDatabase()
+
+    def override_database():
+        yield fake_database
+
+    app.dependency_overrides[
+        get_database
+    ] = override_database
+
+    captured_values = {}
+
+    def fake_delete_session(
+        database,
+        session_token: str,
+    ) -> None:
+        captured_values["database"] = database
+        captured_values["session_token"] = (
+            session_token
+        )
+
+    monkeypatch.setattr(
+        "src.api.delete_session",
+        fake_delete_session,
+    )
+
+    response = client.post(
+        "/auth/logout",
+        headers={
+            **AUTH_HEADERS,
+            "X-User-Session": "session-token-test",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "message": "Déconnexion effectuée.",
+    }
+
+    assert (
+        captured_values["database"]
+        is fake_database
+    )
+    assert (
+        captured_values["session_token"]
+        == "session-token-test"
+    )   
+
+def test_history_without_user_session_is_rejected() -> None:
+    fake_database = FakeDatabase()
+
+    def override_database():
+        yield fake_database
+
+    def override_connected_user():
+        return None
+
+    app.dependency_overrides[
+        get_database
+    ] = override_database
+
+    app.dependency_overrides[
+        get_optional_connected_user
+    ] = override_connected_user
+
+    response = client.get(
+        "/predictions/history",
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 401
+    assert (
+        response.json()["detail"]
+        == "Connexion utilisateur requise."
+    )
+
+
+def test_history_returns_connected_user_predictions() -> None:
+    connected_user = SimpleNamespace(
+        id=1,
+        username="inovie_lab",
+    )
+
+    prediction_date = datetime.now(timezone.utc)
+
+    fake_prediction = SimpleNamespace(
+        id=42,
+        user_id=1,
+        source="manuel",
+        created_at=prediction_date,
+        ph=7.2,
+        hardness=190.0,
+        solids=21000.0,
+        chloramines=7.0,
+        sulfate=330.0,
+        conductivity=420.0,
+        organic_carbon=14.0,
+        trihalomethanes=65.0,
+        turbidity=4.0,
+        predicted_class=1,
+        label="potable",
+        potable_probability=0.78,
+    )
+
+    fake_database = FakeDatabase(
+        scalars_result=[fake_prediction],
+    )
+
+    def override_database():
+        yield fake_database
+
+    def override_connected_user():
+        return connected_user
+
+    app.dependency_overrides[
+        get_database
+    ] = override_database
+
+    app.dependency_overrides[
+        get_optional_connected_user
+    ] = override_connected_user
+
+    response = client.get(
+        "/predictions/history",
+        headers={
+            **AUTH_HEADERS,
+            "X-User-Session": "session-token-test",
+        },
+    )
+
+    assert response.status_code == 200
+
+    result = response.json()
+
+    assert len(result) == 1
+    assert result[0]["id"] == 42
+    assert result[0]["source"] == "manuel"
+    assert result[0]["ph"] == pytest.approx(7.2)
+    assert result[0]["predicted_class"] == 1
+    assert result[0]["label"] == "potable"
+    assert result[0][
+        "potable_probability"
+    ] == pytest.approx(0.78)
+
+def test_guest_prediction_is_not_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_database = FakeDatabase()
+
+    def override_database():
+        yield fake_database
+
+    def override_connected_user():
+        return None
+
+    app.dependency_overrides[
+        get_database
+    ] = override_database
+
+    app.dependency_overrides[
+        get_optional_connected_user
+    ] = override_connected_user
+
+    monkeypatch.setattr(
+        "src.api.predict_water_quality",
+        lambda input_data: (1, 0.8123),
+    )
+
+    response = client.post(
+        "/predict",
+        json=VALID_PAYLOAD,
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert fake_database.added_objects == []
+    assert fake_database.commit_called is False
+
+
+def test_connected_prediction_is_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connected_user = SimpleNamespace(
+        id=1,
+        username="inovie_lab",
+    )
+
+    fake_database = FakeDatabase()
+
+    def override_database():
+        yield fake_database
+
+    def override_connected_user():
+        return connected_user
+
+    app.dependency_overrides[
+        get_database
+    ] = override_database
+
+    app.dependency_overrides[
+        get_optional_connected_user
+    ] = override_connected_user
+
+    monkeypatch.setattr(
+        "src.api.predict_water_quality",
+        lambda input_data: (1, 0.8123),
+    )
+
+    response = client.post(
+        "/predict",
+        params={"source": "ocr"},
+        json=VALID_PAYLOAD,
+        headers={
+            **AUTH_HEADERS,
+            "X-User-Session": "session-token-test",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(fake_database.added_objects) == 1
+    assert fake_database.commit_called is True
+
+    saved_prediction = (
+        fake_database.added_objects[0]
+    )
+
+    assert saved_prediction.user_id == 1
+    assert saved_prediction.source == "ocr"
+    assert saved_prediction.predicted_class == 1
+    assert saved_prediction.label == "potable"
+    assert (
+        saved_prediction.potable_probability
+        == pytest.approx(0.8123)
+    )
+
+def test_predict_rejects_unknown_property() -> None:
+    payload = VALID_PAYLOAD.copy()
+    payload["administrateur"] = True
+
+    response = client.post(
+        "/predict",
+        json=payload,
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 422

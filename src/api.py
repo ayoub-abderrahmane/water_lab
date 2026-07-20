@@ -65,6 +65,7 @@ app = FastAPI(
 
 class WaterSample(BaseModel):
     model_config = ConfigDict(
+        extra="forbid",
         json_schema_extra={
             "example": {
                 "ph": 7.2,
@@ -77,7 +78,7 @@ class WaterSample(BaseModel):
                 "Trihalomethanes": 65.0,
                 "Turbidity": 4.0,
             }
-        }
+        },
     )
 
     ph: float | None = Field(default=None)
