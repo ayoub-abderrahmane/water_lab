@@ -25,6 +25,7 @@ services:
     image: ghcr.io/mlflow/mlflow:v3.1.0
     container_name: water_lab_mlflow
     restart: unless-stopped
+
     command:
       - mlflow
       - server
@@ -34,10 +35,12 @@ services:
       - "5000"
       - --backend-store-uri
       - sqlite:////mlflow/mlflow.db
-      - --default-artifact-root
+      - --artifacts-destination
       - /mlflow/artifacts
+
     ports:
       - "5000:5000"
+
     volumes:
       - mlflow_data:/mlflow
 
@@ -67,7 +70,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./models:/app/models:ro
+      - ./models:/app/models
+      - ./data:/app/data
       - ./logs:/app/logs
     depends_on:
       postgres:

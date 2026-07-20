@@ -491,7 +491,7 @@ Les modèles Pydantic définissent les propriétés entrantes et sortantes. L’
 
 Mesures appliquées :
 
-- taille maximale de 1 Mio ;
+- taille maximale de 1 Mo ;
 - un fichier par requête ;
 - formats limités ;
 - délai maximal OCR ;

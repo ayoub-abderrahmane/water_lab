@@ -2,12 +2,16 @@ import logging
 import os
 import time
 from pathlib import Path
+import pandas as pd
+import matplotlib.pyplot as plt
 
 import joblib
 import mlflow
 import mlflow.sklearn
 from sklearn.metrics import (
+    ConfusionMatrixDisplay,
     accuracy_score,
+    confusion_matrix,
     f1_score,
     precision_score,
     recall_score,
@@ -37,6 +41,14 @@ MLFLOW_TRACKING_URI = os.getenv(
 )
 
 MLFLOW_EXPERIMENT_NAME = "water_lab_xgboost"
+
+REPORTS_PATH = Path("reports")
+CONFUSION_MATRIX_PATH = (
+    REPORTS_PATH / "confusion_matrix.png"
+)
+CONFUSION_MATRIX_CSV_PATH = (
+    REPORTS_PATH / "confusion_matrix.csv"
+)
 
 MINIMUM_ACCURACY = 0.55
 MINIMUM_ROC_AUC = 0.58
@@ -84,6 +96,77 @@ def validate_model_metrics(
         MINIMUM_ROC_AUC,
     )
 
+
+def save_confusion_matrix_artifacts(
+    y_true,
+    y_pred,
+) -> None:
+    """
+    Génère la matrice de confusion sous deux formats.
+
+    Le fichier PNG fournit une représentation visuelle.
+    Le fichier CSV fournit les valeurs numériques dans un
+    format accessible et facilement réutilisable.
+    """
+    REPORTS_PATH.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    matrix = confusion_matrix(
+        y_true,
+        y_pred,
+        labels=[0, 1],
+    )
+
+    figure, axis = plt.subplots(
+        figsize=(7, 6),
+    )
+
+    display = ConfusionMatrixDisplay(
+        confusion_matrix=matrix,
+        display_labels=[
+            "Non potable",
+            "Potable",
+        ],
+    )
+
+    display.plot(
+        ax=axis,
+        values_format="d",
+    )
+
+    axis.set_title(
+        "Matrice de confusion — Water Lab"
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        CONFUSION_MATRIX_PATH,
+        dpi=150,
+        bbox_inches="tight",
+    )
+
+    plt.close(figure)
+
+    matrix_dataframe = pd.DataFrame(
+        matrix,
+        index=[
+            "Réel : non potable",
+            "Réel : potable",
+        ],
+        columns=[
+            "Prédit : non potable",
+            "Prédit : potable",
+        ],
+    )
+
+    matrix_dataframe.to_csv(
+        CONFUSION_MATRIX_CSV_PATH,
+        encoding="utf-8",
+    )
+
 def main() -> None:
     start_time = time.perf_counter()
 
@@ -126,9 +209,23 @@ def main() -> None:
             pipeline.fit(x_train, y_train)
 
             predictions = pipeline.predict(x_test)
+
             probabilities = pipeline.predict_proba(
                 x_test
             )[:, 1]
+
+            matrix = confusion_matrix(
+                y_test,
+                predictions,
+                labels=[0, 1],
+            )
+
+            (
+                true_negative,
+                false_positive,
+                false_negative,
+                true_positive,
+            ) = matrix.ravel()
 
             metrics = {
                 "accuracy": accuracy_score(
@@ -154,22 +251,47 @@ def main() -> None:
                     y_test,
                     probabilities,
                 ),
+                "true_negatives": float(
+                    true_negative
+                ),
+                "false_positives": float(
+                    false_positive
+                ),
+                "false_negatives": float(
+                    false_negative
+                ),
+                "true_positives": float(
+                    true_positive
+                ),
             }
 
+            save_confusion_matrix_artifacts(
+                y_true=y_test,
+                y_pred=predictions,
+            )
+
             mlflow.log_params(XGBOOST_PARAMS)
+
             mlflow.log_param(
                 "imputation_strategy",
                 "median",
             )
+
             mlflow.log_param(
                 "missing_indicator",
                 True,
             )
-            mlflow.log_param("test_size", 0.2)
+
+            mlflow.log_param(
+                "test_size",
+                0.2,
+            )
+
             mlflow.log_param(
                 "dataset_rows",
                 len(dataframe),
             )
+
             mlflow.log_metrics(metrics)
 
             validate_model_metrics(metrics)
@@ -178,12 +300,31 @@ def main() -> None:
                 parents=True,
                 exist_ok=True,
             )
-            joblib.dump(pipeline, MODEL_PATH)
+
+            joblib.dump(
+                pipeline,
+                MODEL_PATH,
+            )
 
             mlflow.log_artifact(
-                str(PROCESSED_DATA_PATH)
+                str(PROCESSED_DATA_PATH),
+                artifact_path="data",
             )
-            mlflow.log_artifact(str(MODEL_PATH))
+
+            mlflow.log_artifact(
+                str(MODEL_PATH),
+                artifact_path="model_joblib",
+            )
+
+            mlflow.log_artifact(
+                str(CONFUSION_MATRIX_PATH),
+                artifact_path="evaluation",
+            )
+
+            mlflow.log_artifact(
+                str(CONFUSION_MATRIX_CSV_PATH),
+                artifact_path="evaluation",
+            )
 
             mlflow.sklearn.log_model(
                 sk_model=pipeline,
@@ -194,6 +335,15 @@ def main() -> None:
             logger.info(
                 "Run MLflow terminé | run_id=%s",
                 run.info.run_id,
+            )
+
+            training_duration = (
+                time.perf_counter() - start_time
+            )
+
+            mlflow.log_metric(
+                "training_duration_seconds",
+                training_duration,
             )
 
         duration = time.perf_counter() - start_time
