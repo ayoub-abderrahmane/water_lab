@@ -94,21 +94,19 @@ if "connected_username" not in st.session_state:
     st.session_state["connected_username"] = None
 
 def get_api_headers() -> dict[str, str]:
-    """
-    Construit les en-têtes utilisés pour appeler l'API.
-    """
     headers = {
         "Authorization": f"Bearer {API_AUTH_TOKEN}",
     }
 
-    user_token = st.session_state.get(
+    session_token = st.session_state.get(
         "user_session_token"
     )
 
-    if user_token:
-        headers["X-User-Session"] = user_token
+    if session_token:
+        headers["X-User-Session"] = session_token
 
     return headers
+
 
 HEADERS = get_api_headers()
 
@@ -177,7 +175,7 @@ with history_tab:
         try:
             response = requests.get(
                 f"{API_URL}/predictions/history",
-                headers=get_api_headers(),
+                headers=HEADERS,
                 timeout=10,
             )
 
@@ -367,7 +365,7 @@ with prediction_tab:
             f"{API_URL}/predict",
             params={"source": "manuel"},
             json=payload,
-            headers=get_api_headers(),
+            headers=HEADERS,
             timeout=10,
         )
 
@@ -435,7 +433,7 @@ with ocr_tab:
                 ):
                     response = requests.post(
                         f"{API_URL}/ocr",
-                        headers=get_api_headers(),
+                        headers=HEADERS,
                         files={
                             "file": (
                                 uploaded_file.name,
@@ -606,7 +604,7 @@ with ocr_tab:
                     f"{API_URL}/predict",
                     params={"source": "ocr"},
                     json=slider_values,
-                    headers=get_api_headers(),
+                    headers=HEADERS,
                     timeout=10,
                 )
 
@@ -730,7 +728,7 @@ with st.sidebar:
             try:
                 requests.post(
                     f"{API_URL}/auth/logout",
-                    headers=get_api_headers(),
+                    headers=HEADERS,
                     timeout=10,
                 )
             finally:
