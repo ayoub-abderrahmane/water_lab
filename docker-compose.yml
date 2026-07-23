@@ -120,6 +120,14 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_HOST: "smtp.gmail.com:587"
+      GF_SMTP_USER: "${GRAFANA_SMTP_USER}"
+      GF_SMTP_PASSWORD: "${GRAFANA_SMTP_PASSWORD}"
+      GF_SMTP_FROM_ADDRESS: "${GRAFANA_SMTP_USER}"
+      GF_SMTP_FROM_NAME: "Water Lab Monitoring"
+      GF_SMTP_SKIP_VERIFY: "false"
+      GF_SMTP_STARTTLS_POLICY: "MandatoryStartTLS"
     ports:
       - "3000:3000"
     volumes:
