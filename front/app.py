@@ -108,7 +108,9 @@ def get_api_headers() -> dict[str, str]:
     return headers
 
 
-HEADERS = get_api_headers()
+# Version volontairement défectueuse pour reproduire l’incident.
+if "cached_api_headers" not in st.session_state:
+    st.session_state["cached_api_headers"] = get_api_headers()
 
 def display_water_warnings(values: dict[str, float]) -> None:
     warnings = []
@@ -146,6 +148,8 @@ def display_water_warnings(values: dict[str, float]) -> None:
         "une analyse réglementaire en laboratoire."
     )
 
+    
+
 st.set_page_config(
     page_title="Water Lab",
     page_icon="💧",
@@ -172,43 +176,35 @@ with history_tab:
         )
 
     else:
-        try:
-            response = requests.get(
-                f"{API_URL}/predictions/history",
-                headers=HEADERS,
-                timeout=10,
-            )
+            history = []
 
-            if response.status_code == 401:
-                st.session_state[
-                    "user_session_token"
-                ] = None
-
-                st.session_state[
-                    "connected_username"
-                ] = None
-
-                st.warning(
-                    "La session a expiré. "
-                    "Reconnectez-vous."
+            try:
+                response = requests.get(
+                    f"{API_URL}/predictions/history",
+                    headers=st.session_state["cached_api_headers"],
+                    timeout=10,
                 )
 
-            else:
-                response.raise_for_status()
-                history = response.json()
+                if response.status_code == 401:
+                    st.warning("La session a expiré. Reconnectez-vous.")
 
-        except requests.RequestException as error:
-            st.error(
-                "Impossible de charger l'historique : "
-                f"{error}"
-            )
+                elif response.status_code == 200:
+                    history = response.json()
 
-        else:
+                else:
+                    st.error(
+                        f"Erreur lors du chargement de l'historique : "
+                        f"HTTP {response.status_code}"
+                    )
+
+            except requests.RequestException as exc:
+                st.error(f"Erreur de communication avec l'API : {exc}")
+
             if not history:
-                st.info(
-                    "Aucune prédiction enregistrée."
-                )
+                st.info("Aucune prédiction à afficher.")
             else:
+
+
                 rows = []
 
                 for item in history:
@@ -365,7 +361,7 @@ with prediction_tab:
             f"{API_URL}/predict",
             params={"source": "manuel"},
             json=payload,
-            headers=HEADERS,
+            headers=st.session_state["cached_api_headers"],
             timeout=10,
         )
 
@@ -433,7 +429,7 @@ with ocr_tab:
                 ):
                     response = requests.post(
                         f"{API_URL}/ocr",
-                        headers=HEADERS,
+                        headers=st.session_state["cached_api_headers"],
                         files={
                             "file": (
                                 uploaded_file.name,
@@ -604,7 +600,7 @@ with ocr_tab:
                     f"{API_URL}/predict",
                     params={"source": "ocr"},
                     json=slider_values,
-                    headers=HEADERS,
+                    headers=st.session_state["cached_api_headers"],
                     timeout=10,
                 )
 
@@ -728,7 +724,7 @@ with st.sidebar:
             try:
                 requests.post(
                     f"{API_URL}/auth/logout",
-                    headers=HEADERS,
+                    headers=st.session_state["cached_api_headers"],
                     timeout=10,
                 )
             finally:
