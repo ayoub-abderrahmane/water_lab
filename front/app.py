@@ -3,6 +3,8 @@ import os
 import requests
 import streamlit as st
 
+from front.headers import build_api_headers
+
 API_URL = os.getenv("API_URL", "http://api:8000")
 API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN")
 
@@ -94,23 +96,16 @@ if "connected_username" not in st.session_state:
     st.session_state["connected_username"] = None
 
 def get_api_headers() -> dict[str, str]:
-    """
-    Construit les en-têtes utilisés pour appeler l'API.
-    """
-    headers = {
-        "Authorization": f"Bearer {API_AUTH_TOKEN}",
-    }
-
-    user_token = st.session_state.get(
-        "user_session_token"
+    return build_api_headers(
+        api_token=API_AUTH_TOKEN,
+        user_session_token=st.session_state.get(
+            "user_session_token"
+        ),
     )
 
-    if user_token:
-        headers["X-User-Session"] = user_token
-
-    return headers
-
 HEADERS = get_api_headers()
+
+
 
 def display_water_warnings(values: dict[str, float]) -> None:
     warnings = []

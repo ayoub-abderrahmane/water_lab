@@ -14,7 +14,7 @@ on:
 
 jobs:
   validate-and-test:
-    name: Valider les données et tester le modèle
+    name: Valider les données et tester l'application
     runs-on: ubuntu-latest
 
     steps:
@@ -37,11 +37,10 @@ jobs:
           API_AUTH_TOKEN: test-token
           DATABASE_URL: sqlite+pysqlite:///./test_water_lab.db
         run: |
-          uv run pytest \
-            tests/test_cycle_model.py \
-            tests/test_api.py \
+          uv run pytest tests \
             -v \
             --cov=src \
+            --cov=front \
             --cov-report=term-missing \
             --cov-report=html
 
